@@ -137,24 +137,10 @@ def extract_incremental(settings: Settings, dry_run: bool = False) -> dict[str, 
     return stats
 
 
-def read_day_transcript_text(settings: Settings, date_str: str) -> str:
-    """Format a day's raw jsonl records into compact plain text for LLM compilation."""
-    path = settings.raw_daily_dir / f"{date_str}.jsonl"
-    if not path.exists():
-        return ""
-    rows: list[dict[str, Any]] = []
-    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            rows.append(json.loads(raw))
-        except Exception:
-            continue
+def _format_transcript_rows(settings: Settings, rows: list[dict[str, Any]]) -> str:
     if not rows:
         return ""
-    rows.sort(key=lambda x: x.get("ts", ""))
-
+    rows = sorted(rows, key=lambda x: x.get("ts", ""))
     lines: list[str] = []
     for r in rows:
         hhmm = str(r.get("ts", ""))[11:16] or "??:??"
@@ -169,3 +155,31 @@ def read_day_transcript_text(settings: Settings, date_str: str) -> str:
         tail = joined[-(settings.max_input_chars * 2 // 3) :]
         joined = head + "\n...[中间记录已略]...\n" + tail
     return joined
+
+
+def read_day_transcript_since(settings: Settings, date_str: str, start_line: int = 0) -> tuple[str, int]:
+    """Read raw jsonl lines after start_line (0-based count) and return (formatted_text, total_lines)."""
+    path = settings.raw_daily_dir / f"{date_str}.jsonl"
+    if not path.exists():
+        return "", 0
+    raw_lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    total_lines = len(raw_lines)
+    if start_line >= total_lines:
+        return "", total_lines
+
+    rows: list[dict[str, Any]] = []
+    for raw in raw_lines[start_line:]:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rows.append(json.loads(raw))
+        except Exception:
+            continue
+    return _format_transcript_rows(settings, rows), total_lines
+
+
+def read_day_transcript_text(settings: Settings, date_str: str) -> str:
+    """Format a day's full raw jsonl records into compact plain text for LLM compilation."""
+    text, _ = read_day_transcript_since(settings, date_str, start_line=0)
+    return text

@@ -45,6 +45,10 @@ class Settings:
     user_label: str
     assistant_label: str
     profile_note_link: str
+    hot_memory_enabled: bool
+    hot_memory_path: Path
+    hot_memory_max_chars: int
+    hot_week_days: int
 
     @property
     def today_md(self) -> Path:
@@ -116,4 +120,10 @@ def get_settings() -> Settings:
         user_label=get("USER_LABEL", "User"),
         assistant_label=get("ASSISTANT_LABEL", "Assistant"),
         profile_note_link=get("PROFILE_NOTE_LINK", ""),
+        hot_memory_enabled=get("HOT_MEMORY_ENABLED", "true").lower() not in ("0", "false", "no", "off"),
+        hot_memory_path=Path(
+            get("HOT_MEMORY_PATH", str(home / ".gemini" / "config" / "rules" / "agy-hot-memory.md"))
+        ),
+        hot_memory_max_chars=int(get("HOT_MEMORY_MAX_CHARS", "1500")),
+        hot_week_days=int(get("HOT_WEEK_DAYS", "3")),
     )

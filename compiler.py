@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from config import LOCAL_TZ, Settings
-from extractor import read_day_transcript_text
+from extractor import read_day_transcript_since, read_day_transcript_text
 from llm_client import chat_complete
 from prompts import PROMPT_DAILY, PROMPT_LONGTERM, PROMPT_TODAY
 
@@ -125,12 +125,23 @@ def compile_past_days(settings: Settings, today_str: str, dry_run: bool = False)
 def compile_today(
     settings: Settings, today_str: str, dry_run: bool = False, force: bool = False
 ) -> str:
-    """Incrementally compile today's conversations into basic-memory/daily/agy-today.md."""
-    raw_text = read_day_transcript_text(settings, today_str)
+    """Incrementally roll new conversation turns into basic-memory/daily/agy-today.md."""
     state = _load_json(settings.today_state_path, {})
+    same_day = state.get("logicalDate") == today_str
+    prev_line = 0
+    if same_day and not force:
+        if "compiledLine" in state:
+            prev_line = max(0, int(state.get("compiledLine", 0)))
+        elif state.get("fingerprint"):
+            # Smoothly migrate legacy v1 today-state.json without re-compiling unchanged day
+            full_text, total_lines = read_day_transcript_since(settings, today_str, start_line=0)
+            if full_text and _sha256(full_text) == state.get("fingerprint"):
+                prev_line = total_lines
 
-    if not raw_text:
-        if state.get("logicalDate") != today_str and not dry_run:
+    delta_text, total_lines = read_day_transcript_since(settings, today_str, start_line=prev_line)
+
+    if total_lines == 0:
+        if not same_day and not dry_run:
             body = f"> 更新日期：{today_str}\n\n暂无新增记录。"
             _write_atomic(
                 settings.today_md,
@@ -138,24 +149,33 @@ def compile_today(
             )
             _save_json(
                 settings.today_state_path,
-                {"logicalDate": today_str, "fingerprint": "", "updatedAt": _now_local().isoformat()},
+                {
+                    "logicalDate": today_str,
+                    "compiledLine": 0,
+                    "fingerprint": "",
+                    "updatedAt": _now_local().isoformat(),
+                },
             )
         return "empty"
 
-    fp = _sha256(raw_text)
-    if not force and state.get("logicalDate") == today_str and state.get("fingerprint") == fp:
+    if not force and same_day and (not delta_text or total_lines <= prev_line):
+        return "unchanged"
+
+    delta_fp = _sha256(f"{prev_line}:{total_lines}:{delta_text}")
+    if not force and same_day and state.get("fingerprint") == delta_fp:
         return "unchanged"
     if dry_run:
-        return f"would_compile ({len(raw_text)} chars)"
+        return f"would_compile (lines {prev_line}->{total_lines}, {len(delta_text)} chars)"
 
     existing = ""
-    if state.get("logicalDate") == today_str and settings.today_md.exists():
+    if same_day and not force and settings.today_md.exists():
         existing = _strip_frontmatter(settings.today_md.read_text(encoding="utf-8", errors="ignore"))
 
     parts = [f"日期：{today_str}"]
     if existing and "暂无新增记录" not in existing:
         parts.append(f"## 现有今日动态\n{existing}")
-    parts.append(f"## 今日对话记录\n{raw_text}")
+    label = "## 今日新增对话记录" if existing else "## 今日对话记录"
+    parts.append(f"{label}\n{delta_text}")
 
     summary = chat_complete(
         settings, PROMPT_TODAY, "\n\n".join(parts), max_tokens=settings.today_max_tokens
@@ -171,9 +191,14 @@ def compile_today(
     )
     _save_json(
         settings.today_state_path,
-        {"logicalDate": today_str, "fingerprint": fp, "updatedAt": _now_local().isoformat()},
+        {
+            "logicalDate": today_str,
+            "compiledLine": total_lines,
+            "fingerprint": delta_fp,
+            "updatedAt": _now_local().isoformat(),
+        },
     )
-    return "compiled"
+    return f"compiled(lines {prev_line}->{total_lines})"
 
 
 def roll_daily_window(settings: Settings, today_str: str, dry_run: bool = False) -> list[str]:
@@ -257,6 +282,77 @@ def assemble_week(settings: Settings, dry_run: bool = False) -> int:
     return len(blocks)
 
 
+def _strip_footer_links(text: str) -> str:
+    idx = text.find("\n## 关联")
+    return text[:idx].strip() if idx != -1 else text.strip()
+
+
+def _truncate_clean(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    if limit <= 12:
+        return text[:limit]
+    return text[: limit - 6].rstrip() + "\n…(略)"
+
+
+def assemble_hot_memory(settings: Settings, today_str: str, dry_run: bool = False) -> str:
+    """Assemble compact auto-loaded hot memory rule (<= hot_memory_max_chars) for new sessions."""
+    if not settings.hot_memory_enabled:
+        return "disabled"
+
+    header = (
+        "# Antigravity 热记忆预热（自动生成）\n\n"
+        f"> 同步日期：{today_str} | 由 `agy-memory-sync` 自动维护，仅保留近期热上下文；完整历史请检索 `basic-memory` MCP。\n"
+    )
+    sections: list[tuple[str, str]] = []
+
+    if settings.today_md.exists():
+        t_body = _strip_footer_links(_strip_frontmatter(settings.today_md.read_text(encoding="utf-8", errors="ignore")))
+        if t_body and "暂无新增记录" not in t_body:
+            sections.append(("## 今日动态", t_body))
+
+    recent_days = _list_archive_days(settings.daily_archive_dir)[-settings.hot_week_days :]
+    if recent_days:
+        day_blocks = [p.read_text(encoding="utf-8", errors="ignore").strip() for _, p in reversed(recent_days)]
+        day_blocks = [b for b in day_blocks if b]
+        if day_blocks:
+            sections.append((f"## 最近 {len(day_blocks)} 天动态", "\n\n".join(day_blocks)))
+
+    if settings.longterm_md.exists():
+        lt_body = _strip_footer_links(_strip_frontmatter(settings.longterm_md.read_text(encoding="utf-8", errors="ignore")))
+        if lt_body:
+            sections.append(("## 长期沉淀核心", lt_body))
+
+    if not sections:
+        return "empty"
+
+    budget = max(400, settings.hot_memory_max_chars)
+    parts = [header.rstrip()]
+    used = len(parts[0])
+
+    for title, content in sections:
+        remaining = budget - used - len(title) - 6
+        if remaining < 80:
+            break
+        clipped = _truncate_clean(content, remaining)
+        block = f"{title}\n\n{clipped}"
+        parts.append(block)
+        used += len(block) + 2
+
+    final_text = "\n\n".join(parts).rstrip() + "\n"
+    if dry_run:
+        return f"would_write ({len(final_text)} chars)"
+
+    if settings.hot_memory_path.exists():
+        old_text = settings.hot_memory_path.read_text(encoding="utf-8", errors="ignore")
+        if old_text == final_text:
+            return f"unchanged ({len(final_text)} chars)"
+
+    _write_atomic(settings.hot_memory_path, final_text)
+    return f"written ({len(final_text)} chars)"
+
+
 def run_pipeline(settings: Settings, dry_run: bool = False, force_today: bool = False) -> dict[str, Any]:
     """Run daily state machine (catch-up on missed days + incremental today update)."""
     today_str = _now_local().strftime("%Y-%m-%d")
@@ -283,6 +379,7 @@ def run_pipeline(settings: Settings, dry_run: bool = False, force_today: bool = 
 
     report["assembleWeek"] = assemble_week(settings, dry_run=dry_run)
     report["compileToday"] = compile_today(settings, today_str, dry_run=dry_run, force=force_today)
+    report["hotMemory"] = assemble_hot_memory(settings, today_str, dry_run=dry_run)
 
     if not dry_run:
         _save_json(

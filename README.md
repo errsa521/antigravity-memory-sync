@@ -11,12 +11,14 @@ Antigravity transcript.jsonl
    │  (行号游标增量抽取 + 清洗工具噪音与系统标签)
    ▼
 state/raw-daily/YYYY-MM-DD.jsonl
-   ├── 当日新增 ──► basic-memory/daily/agy-today.md       (SHA-256 指纹防重，跨日自动重置)
-   ├── 历史归档 ──► basic-memory/daily/agy-week.md        (最近 6 天滚动窗口，硬上限 2500 字)
-   └── 超出 6 天 ──► basic-memory/profile/agy-longterm.md (旧长期画像 + 过期日报折叠重写，定长防膨胀)
+   ├── 当日增量轮次 ──► basic-memory/daily/agy-today.md       (按行号游标滚动合并，不重传整天)
+   ├── 历史归档 ──────► basic-memory/daily/agy-week.md        (最近 6 天滚动窗口，硬上限 2500 字)
+   ├── 超出 6 天 ─────► basic-memory/profile/agy-longterm.md  (旧长期画像 + 过期日报折叠重写)
+   └── 热上下文预热 ──► ~/.gemini/config/rules/agy-hot-memory.md (≤1500 字，新会话零延迟自动加载)
 ```
 
-- **绝对防膨胀**：不是只追加不清理。`agy-today.md` 每日重置，`agy-week.md` 锁定最近 `6` 天且不超过 `2500` 字；超期日报自动折叠重写进 `agy-longterm.md`，仅在写盘成功后移入 `state/folded-archive/`，失败自动留待下轮重试。
+- **绝对防膨胀**：不是只追加不清理。`agy-today.md` 按行号游标增量合并且跨日重置，`agy-week.md` 锁定最近 `6` 天且不超过 `2500` 字；超期日报自动折叠重写进 `agy-longterm.md`，仅在写盘成功后移入 `state/folded-archive/`，失败自动留待下轮重试。
+- **新会话热记忆预热**：每次同步后自动本地拼接一份 `≤1500` 字的精简热摘要写入 `~/.gemini/config/rules/agy-hot-memory.md`（零额外 API 费用），利用 Antigravity 原生规则加载机制让新窗口首轮就具备近期上下文；完整历史仍由 `basic-memory` MCP 按需检索。
 - **离线自动补跑**：`daily-state.json` 按逻辑日期记录各步骤完成状态，配合 Windows 任务计划程序 `StartWhenAvailable=True` 与开机/每小时双触发器，关机错过后上线即自动补跑；已完成当日步骤则秒退不花额度。
 - **独立文件防冲突**：默认写入 `agy-today.md`、`agy-week.md`、`agy-longterm.md`，不覆盖原有手动维护或从其他 Agent 同步来的 Basic Memory 笔记。
 
