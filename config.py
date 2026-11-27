@@ -26,11 +26,25 @@ def load_dotenv(env_path: Path) -> dict[str, str]:
     return values
 
 
+def _parse_bool(val: str, default: bool) -> bool:
+    if not val:
+        return default
+    return val.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _parse_csv(val: str) -> tuple[str, ...]:
+    if not val:
+        return ()
+    return tuple(item.strip() for item in val.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     brain_dir: Path
+    conversations_dir: Path
     memory_dir: Path
     state_dir: Path
+    prompt_dir: Path
     api_base_url: str
     api_key: str
     api_model: str
@@ -45,9 +59,14 @@ class Settings:
     user_label: str
     assistant_label: str
     profile_note_link: str
+    workspace_filters: tuple[str, ...]
+    skip_subagents: bool
+    redact_secrets: bool
     hot_memory_enabled: bool
     hot_memory_path: Path
     hot_memory_max_chars: int
+    hot_longterm_reserve: int
+    hot_today_reserve: int
     hot_week_days: int
 
     @property
@@ -98,14 +117,19 @@ def get_settings() -> Settings:
         return os.environ.get(key) or env_file.get(key) or default
 
     home = Path.home()
-    brain = Path(get("AGY_BRAIN_DIR", str(home / ".gemini" / "antigravity" / "brain")))
+    agy_root = home / ".gemini" / "antigravity"
+    brain = Path(get("AGY_BRAIN_DIR", str(agy_root / "brain")))
+    convs = Path(get("AGY_CONVERSATIONS_DIR", str(agy_root / "conversations")))
     memory = Path(get("BASIC_MEMORY_DIR", str(home / "basic-memory")))
     state = Path(get("AGY_SYNC_STATE_DIR", str(BASE_DIR / "state")))
+    prompt_dir = Path(get("PROMPT_DIR", str(BASE_DIR / "prompts")))
 
     return Settings(
         brain_dir=brain,
+        conversations_dir=convs,
         memory_dir=memory,
         state_dir=state,
+        prompt_dir=prompt_dir,
         api_base_url=get("API_BASE_URL", "").rstrip("/"),
         api_key=get("API_KEY", ""),
         api_model=get("API_MODEL", "gemini-2.5-flash"),
@@ -114,16 +138,21 @@ def get_settings() -> Settings:
         week_max_chars=int(get("WEEK_MAX_CHARS", "2500")),
         longterm_max_tokens=int(get("LONGTERM_MAX_TOKENS", "1250")),
         daily_max_tokens=int(get("DAILY_MAX_TOKENS", "500")),
-        today_max_tokens=int(get("TODAY_MAX_TOKENS", "600")),
-        max_msg_chars=int(get("MAX_MSG_CHARS", "800")),
+        today_max_tokens=int(get("TODAY_MAX_TOKENS", "650")),
+        max_msg_chars=int(get("MAX_MSG_CHARS", "1600")),
         max_input_chars=int(get("MAX_INPUT_CHARS", "16000")),
         user_label=get("USER_LABEL", "User"),
         assistant_label=get("ASSISTANT_LABEL", "Assistant"),
         profile_note_link=get("PROFILE_NOTE_LINK", ""),
-        hot_memory_enabled=get("HOT_MEMORY_ENABLED", "true").lower() not in ("0", "false", "no", "off"),
+        workspace_filters=_parse_csv(get("WORKSPACE_FILTER", "")),
+        skip_subagents=_parse_bool(get("SKIP_SUBAGENTS", "true"), True),
+        redact_secrets=_parse_bool(get("REDACT_SECRETS", "true"), True),
+        hot_memory_enabled=_parse_bool(get("HOT_MEMORY_ENABLED", "true"), True),
         hot_memory_path=Path(
             get("HOT_MEMORY_PATH", str(home / ".gemini" / "config" / "rules" / "agy-hot-memory.md"))
         ),
-        hot_memory_max_chars=int(get("HOT_MEMORY_MAX_CHARS", "1500")),
+        hot_memory_max_chars=int(get("HOT_MEMORY_MAX_CHARS", "1800")),
+        hot_longterm_reserve=int(get("HOT_LONGTERM_RESERVE", "500")),
+        hot_today_reserve=int(get("HOT_TODAY_RESERVE", "600")),
         hot_week_days=int(get("HOT_WEEK_DAYS", "3")),
     )
