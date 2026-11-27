@@ -1,0 +1,19 @@
+# Secrets & local runtime state (NEVER commit)
+.env
+.env.*
+!.env.example
+state/
+*.log
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
